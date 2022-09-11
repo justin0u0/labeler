@@ -13,6 +13,8 @@ interface MatchConfig {
 type StringOrMatchConfig = string | MatchConfig;
 type ClientType = ReturnType<typeof github.getOctokit>;
 
+export type GlobalMatchConfig = StringOrMatchConfig[];
+
 export async function run() {
   try {
     const token = core.getInput("repo-token", { required: true });
@@ -186,6 +188,10 @@ function isMatchAll(changedFile: string, matchers: IMinimatch[]): boolean {
 }
 
 function isMatchAny(changedFile: string, matchers: IMinimatch[]): boolean {
+  if (matchers.length === 0) {
+    return true;
+  }
+  
   core.debug(`    matching any patterns against file ${changedFile}`);
   for (const matcher of matchers) {
     core.debug(`   - ${printPattern(matcher)}`);
