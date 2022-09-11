@@ -3,13 +3,17 @@ import * as github from "@actions/github";
 import * as yaml from "js-yaml";
 import { Minimatch, IMinimatch } from "minimatch";
 
+type MatchRule = { and?: string[]; or?: string[] };
+
 interface MatchConfig {
-  all?: string[];
-  any?: string[];
+  all?: string[] | MatchRule;
+  any?: string[] | MatchRule;
 }
 
 type StringOrMatchConfig = string | MatchConfig;
 type ClientType = ReturnType<typeof github.getOctokit>;
+
+export type GlobalMatchConfig = StringOrMatchConfig[];
 
 export async function run() {
   try {
@@ -169,8 +173,8 @@ export function checkGlobs(
   return false;
 }
 
-function isMatch(changedFile: string, matchers: IMinimatch[]): boolean {
-  core.debug(`    matching patterns against file ${changedFile}`);
+function isMatchAll(changedFile: string, matchers: IMinimatch[]): boolean {
+  core.debug(`    matching all patterns against file ${changedFile}`);
   for (const matcher of matchers) {
     core.debug(`   - ${printPattern(matcher)}`);
     if (!matcher.match(changedFile)) {
@@ -183,12 +187,29 @@ function isMatch(changedFile: string, matchers: IMinimatch[]): boolean {
   return true;
 }
 
+function isMatchAny(changedFile: string, matchers: IMinimatch[]): boolean {
+  if (matchers.length === 0) {
+    return true;
+  }
+  
+  core.debug(`    matching any patterns against file ${changedFile}`);
+  for (const matcher of matchers) {
+    core.debug(`   - ${printPattern(matcher)}`);
+    if (matcher.match(changedFile)) {
+      core.debug(`   ${printPattern(matcher)} matched`);
+      return true;
+    }
+  }
+
+  core.debug(`   no patterns matched`);
+  return false;
+}
+
 // equivalent to "Array.some()" but expanded for debugging and clarity
-function checkAny(changedFiles: string[], globs: string[]): boolean {
-  const matchers = globs.map((g) => new Minimatch(g));
-  core.debug(`  checking "any" patterns`);
+function checkAny(changedFiles: string[], matcherAll: IMinimatch[] = [], matcherAny: IMinimatch[] = []): boolean {
+  core.debug(`  checking "any" patterns with "all" matchers`);
   for (const changedFile of changedFiles) {
-    if (isMatch(changedFile, matchers)) {
+    if (isMatchAll(changedFile, matcherAll) && isMatchAny(changedFile, matcherAny)) {
       core.debug(`  "any" patterns matched against ${changedFile}`);
       return true;
     }
@@ -199,11 +220,18 @@ function checkAny(changedFiles: string[], globs: string[]): boolean {
 }
 
 // equivalent to "Array.every()" but expanded for debugging and clarity
-function checkAll(changedFiles: string[], globs: string[]): boolean {
-  const matchers = globs.map((g) => new Minimatch(g));
-  core.debug(` checking "all" patterns`);
+function checkAll(changedFiles: string[], matcherAll: IMinimatch[] = [], matcherAny: IMinimatch[] = []): boolean {
+  core.debug(` checking "all" patterns with "all" matchers`);
   for (const changedFile of changedFiles) {
-    if (!isMatch(changedFile, matchers)) {
+    if (!isMatchAll(changedFile, matcherAll)) {
+      core.debug(`  "all" patterns did not match against ${changedFile}`);
+      return false;
+    }
+  }
+
+  core.debug(` checking "all" patterns with "any" matchers`);
+  for (const changedFile of changedFiles) {
+    if (!isMatchAny(changedFile, matcherAny)) {
       core.debug(`  "all" patterns did not match against ${changedFile}`);
       return false;
     }
@@ -214,19 +242,40 @@ function checkAll(changedFiles: string[], globs: string[]): boolean {
 }
 
 function checkMatch(changedFiles: string[], matchConfig: MatchConfig): boolean {
+
   if (matchConfig.all !== undefined) {
-    if (!checkAll(changedFiles, matchConfig.all)) {
+    const { matcherAll, matcherAny } = toMatchers(matchConfig.all);
+    if (!checkAll(changedFiles, matcherAll, matcherAny)) {
       return false;
     }
   }
 
   if (matchConfig.any !== undefined) {
-    if (!checkAny(changedFiles, matchConfig.any)) {
+    const { matcherAll, matcherAny } = toMatchers(matchConfig.any);
+    if (!checkAny(changedFiles, matcherAll, matcherAny)) {
       return false;
     }
   }
 
   return true;
+}
+
+function toMatchers(config: string[] | MatchRule): { matcherAll: IMinimatch[], matcherAny: IMinimatch[] } {
+  let matcherAll: IMinimatch[] = [];
+  let matcherAny: IMinimatch[] = [];
+
+  if (Array.isArray(config)) {
+    matcherAll = matcherAll.concat(config.map((g) => new Minimatch(g)));
+  } else {
+    if (config.and !== undefined) {
+      matcherAll = matcherAll.concat(config.and.map((g) => new Minimatch(g)));
+    }
+    if (config.or !== undefined) {
+      matcherAny = matcherAny.concat(config.or.map((g) => new Minimatch(g)));
+    }
+  }
+
+  return { matcherAll, matcherAny };
 }
 
 async function addLabels(
